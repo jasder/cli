@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/github/gh-cli/git"
+	"github.com/cli/cli/git"
+	"github.com/cli/cli/internal/config"
+	"github.com/cli/cli/internal/ghrepo"
 )
 
 // NewBlank initializes a blank Context suitable for testing
@@ -15,22 +17,17 @@ func NewBlank() *blankContext {
 // A Context implementation that queries the filesystem
 type blankContext struct {
 	authToken string
-	authLogin string
 	branch    string
-	baseRepo  GitHubRepository
+	baseRepo  ghrepo.Interface
 	remotes   Remotes
 }
 
-type ghRepo struct {
-	owner string
-	name  string
-}
-
-func (r ghRepo) RepoOwner() string {
-	return r.owner
-}
-func (r ghRepo) RepoName() string {
-	return r.name
+func (c *blankContext) Config() (config.Config, error) {
+	cfg, err := config.ParseConfig("config.yml")
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse config during tests. did you remember to stub? error: %s", err))
+	}
+	return cfg, nil
 }
 
 func (c *blankContext) AuthToken() (string, error) {
@@ -39,10 +36,6 @@ func (c *blankContext) AuthToken() (string, error) {
 
 func (c *blankContext) SetAuthToken(t string) {
 	c.authToken = t
-}
-
-func (c *blankContext) AuthLogin() (string, error) {
-	return c.authLogin, nil
 }
 
 func (c *blankContext) Branch() (string, error) {
@@ -64,7 +57,7 @@ func (c *blankContext) Remotes() (Remotes, error) {
 }
 
 func (c *blankContext) SetRemotes(stubs map[string]string) {
-	c.remotes = Remotes{}
+	c.remotes = make([]*Remote, 0, len(stubs))
 	for remoteName, repo := range stubs {
 		ownerWithName := strings.SplitN(repo, "/", 2)
 		c.remotes = append(c.remotes, &Remote{
@@ -75,7 +68,7 @@ func (c *blankContext) SetRemotes(stubs map[string]string) {
 	}
 }
 
-func (c *blankContext) BaseRepo() (GitHubRepository, error) {
+func (c *blankContext) BaseRepo() (ghrepo.Interface, error) {
 	if c.baseRepo != nil {
 		return c.baseRepo, nil
 	}
@@ -90,8 +83,6 @@ func (c *blankContext) BaseRepo() (GitHubRepository, error) {
 }
 
 func (c *blankContext) SetBaseRepo(nwo string) {
-	parts := strings.SplitN(nwo, "/", 2)
-	if len(parts) == 2 {
-		c.baseRepo = &ghRepo{parts[0], parts[1]}
-	}
+	repo, _ := ghrepo.FromFullName(nwo)
+	c.baseRepo = repo
 }

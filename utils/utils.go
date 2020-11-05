@@ -1,53 +1,89 @@
 package utils
 
 import (
-	"errors"
-	"os"
-	"os/exec"
-	"runtime"
+	"fmt"
+	"io"
+	"strings"
+	"time"
 
-	"github.com/kballard/go-shellquote"
+	"github.com/briandowns/spinner"
+	"github.com/charmbracelet/glamour"
+	"github.com/cli/cli/internal/run"
+	"github.com/cli/cli/pkg/browser"
 )
 
+// OpenInBrowser opens the url in a web browser based on OS and $BROWSER environment variable
 func OpenInBrowser(url string) error {
-	browser := os.Getenv("BROWSER")
-	if browser == "" {
-		browser = searchBrowserLauncher(runtime.GOOS)
-	} else {
-		browser = os.ExpandEnv(browser)
-	}
-
-	if browser == "" {
-		return errors.New("Please set $BROWSER to a web launcher")
-	}
-
-	browserArgs, err := shellquote.Split(browser)
+	browseCmd, err := browser.Command(url)
 	if err != nil {
 		return err
 	}
-
-	endingArgs := append(browserArgs[1:], url)
-	browseCmd := exec.Command(browserArgs[0], endingArgs...)
-	return PrepareCmd(browseCmd).Run()
+	return run.PrepareCmd(browseCmd).Run()
 }
 
-func searchBrowserLauncher(goos string) (browser string) {
-	switch goos {
-	case "darwin":
-		browser = "open"
-	case "windows":
-		browser = "cmd /c start"
-	default:
-		candidates := []string{"xdg-open", "cygstart", "x-www-browser", "firefox",
-			"opera", "mozilla", "netscape"}
-		for _, b := range candidates {
-			path, err := exec.LookPath(b)
-			if err == nil {
-				browser = path
-				break
-			}
-		}
+func RenderMarkdown(text string) (string, error) {
+	style := "notty"
+	if isColorEnabled() {
+		style = "dark"
+	}
+	return glamour.Render(text, style)
+}
+
+func Pluralize(num int, thing string) string {
+	if num == 1 {
+		return fmt.Sprintf("%d %s", num, thing)
+	} else {
+		return fmt.Sprintf("%d %ss", num, thing)
+	}
+}
+
+func fmtDuration(amount int, unit string) string {
+	return fmt.Sprintf("about %s ago", Pluralize(amount, unit))
+}
+
+func FuzzyAgo(ago time.Duration) string {
+	if ago < time.Minute {
+		return "less than a minute ago"
+	}
+	if ago < time.Hour {
+		return fmtDuration(int(ago.Minutes()), "minute")
+	}
+	if ago < 24*time.Hour {
+		return fmtDuration(int(ago.Hours()), "hour")
+	}
+	if ago < 30*24*time.Hour {
+		return fmtDuration(int(ago.Hours())/24, "day")
+	}
+	if ago < 365*24*time.Hour {
+		return fmtDuration(int(ago.Hours())/24/30, "month")
 	}
 
-	return browser
+	return fmtDuration(int(ago.Hours()/24/365), "year")
+}
+
+func Humanize(s string) string {
+	// Replaces - and _ with spaces.
+	replace := "_-"
+	h := func(r rune) rune {
+		if strings.ContainsRune(replace, r) {
+			return ' '
+		}
+		return r
+	}
+
+	return strings.Map(h, s)
+}
+
+// We do this so we can stub out the spinner in tests -- it made things really flakey. this is not
+// an elegant solution.
+var StartSpinner = func(s *spinner.Spinner) {
+	s.Start()
+}
+
+var StopSpinner = func(s *spinner.Spinner) {
+	s.Stop()
+}
+
+func Spinner(w io.Writer) *spinner.Spinner {
+	return spinner.New(spinner.CharSets[11], 400*time.Millisecond, spinner.WithWriter(w))
 }

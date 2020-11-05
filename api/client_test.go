@@ -2,10 +2,11 @@ package api
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"reflect"
 	"testing"
+
+	"github.com/cli/cli/pkg/httpmock"
 )
 
 func eq(t *testing.T, got interface{}, expected interface{}) {
@@ -16,7 +17,7 @@ func eq(t *testing.T, got interface{}, expected interface{}) {
 }
 
 func TestGraphQL(t *testing.T) {
-	http := &FakeHTTP{}
+	http := &httpmock.Registry{}
 	client := NewClient(
 		ReplaceTripper(http),
 		AddHeader("Authorization", "token OTOKEN"),
@@ -41,11 +42,27 @@ func TestGraphQL(t *testing.T) {
 }
 
 func TestGraphQLError(t *testing.T) {
-	http := &FakeHTTP{}
+	http := &httpmock.Registry{}
 	client := NewClient(ReplaceTripper(http))
 
 	response := struct{}{}
 	http.StubResponse(200, bytes.NewBufferString(`{"errors":[{"message":"OH NO"}]}`))
 	err := client.GraphQL("", nil, &response)
-	eq(t, err, fmt.Errorf("graphql error: 'OH NO'"))
+	if err == nil || err.Error() != "graphql error: 'OH NO'" {
+		t.Fatalf("got %q", err.Error())
+	}
+}
+
+func TestRESTGetDelete(t *testing.T) {
+	http := &httpmock.Registry{}
+
+	client := NewClient(
+		ReplaceTripper(http),
+	)
+
+	http.StubResponse(204, bytes.NewBuffer([]byte{}))
+
+	r := bytes.NewReader([]byte(`{}`))
+	err := client.REST("DELETE", "applications/CLIENTID/grant", r, nil)
+	eq(t, err, nil)
 }

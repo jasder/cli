@@ -9,16 +9,22 @@ import (
 	"github.com/mgutz/ansi"
 )
 
+var _isColorEnabled = true
 var _isStdoutTerminal = false
 var checkedTerminal = false
+var checkedNoColor = false
 
 func isStdoutTerminal() bool {
 	if !checkedTerminal {
-		fd := os.Stdout.Fd()
-		_isStdoutTerminal = isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+		_isStdoutTerminal = IsTerminal(os.Stdout)
 		checkedTerminal = true
 	}
 	return _isStdoutTerminal
+}
+
+// IsTerminal reports whether the file descriptor is connected to a terminal
+func IsTerminal(f *os.File) bool {
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
 // NewColorable returns an output stream that handles ANSI color sequences on Windows
@@ -29,11 +35,19 @@ func NewColorable(f *os.File) io.Writer {
 func makeColorFunc(color string) func(string) string {
 	cf := ansi.ColorFunc(color)
 	return func(arg string) string {
-		if isStdoutTerminal() {
+		if isColorEnabled() && isStdoutTerminal() {
 			return cf(arg)
 		}
 		return arg
 	}
+}
+
+func isColorEnabled() bool {
+	if !checkedNoColor {
+		_isColorEnabled = os.Getenv("NO_COLOR") == ""
+		checkedNoColor = true
+	}
+	return _isColorEnabled
 }
 
 // Magenta outputs ANSI color if stdout is a tty

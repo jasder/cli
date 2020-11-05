@@ -5,7 +5,7 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/github/gh-cli/api"
+	"github.com/cli/cli/api"
 	"github.com/hashicorp/go-version"
 	"gopkg.in/yaml.v3"
 )
@@ -21,7 +21,7 @@ type StateEntry struct {
 	LatestRelease      ReleaseInfo `yaml:"latest_release"`
 }
 
-// CheckForUpdate checks whether this software has had a newer relase on GitHub
+// CheckForUpdate checks whether this software has had a newer release on GitHub
 func CheckForUpdate(client *api.Client, stateFilePath, repo, currentVersion string) (*ReleaseInfo, error) {
 	latestRelease, err := getLatestReleaseInfo(client, stateFilePath, repo, currentVersion)
 	if err != nil {
@@ -41,7 +41,7 @@ func getLatestReleaseInfo(client *api.Client, stateFilePath, repo, currentVersio
 		return &stateEntry.LatestRelease, nil
 	}
 
-	latestRelease := ReleaseInfo{}
+	var latestRelease ReleaseInfo
 	err = client.REST("GET", fmt.Sprintf("repos/%s/releases/latest", repo), nil, &latestRelease)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func setStateEntry(stateFilePath string, t time.Time, r ReleaseInfo) error {
 	if err != nil {
 		return err
 	}
-	ioutil.WriteFile(stateFilePath, content, 0600)
+	_ = ioutil.WriteFile(stateFilePath, content, 0600)
 
 	return nil
 }

@@ -1,60 +1,139 @@
-# gh - The GitHub CLI tool
+# GitHub CLI
 
-The #ce-cli team is working on a publicly available CLI tool to reduce the friction between GitHub and one's local machine for people who use the command line primarily to interact with Git and GitHub. https://github.com/github/releases/issues/659
+`gh` is GitHub on the command line, and it's now available in beta. It brings pull requests, issues, and other GitHub concepts to
+the terminal next to where you are already working with `git` and your code.
 
-This tool is an endeavor separate from [github/hub](https://github.com/github/hub), which acts as a proxy to `git`, since our aim is to reimagine from scratch the kind of command line interface to GitHub that would serve our users' interests best.
+![screenshot](https://user-images.githubusercontent.com/98482/73286699-9f922180-41bd-11ea-87c9-60a2d31fd0ac.png)
 
-# Installation
+## Availability
 
-_warning, gh is in a very alpha phase_
+While in beta, GitHub CLI is available for repos hosted on GitHub.com only. It does not currently support repositories hosted on GitHub Enterprise Server or other hosting providers. We are planning support for GitHub Enterprise Server after GitHub CLI is out of beta (likely toward the end of 2020), and we want to ensure that the API endpoints we use are more widely available for GHES versions that most GitHub customers are on.
 
-## macOS
+## We need your feedback
 
-`brew install github/gh/gh`
+GitHub CLI is currently early in its development, and we're hoping to get feedback from people using it.
 
-## Debian/Ubuntu Linux
+If you've installed and used `gh`, we'd love for you to take a short survey here (no more than five minutes): https://forms.gle/umxd3h31c7aMQFKG7
 
-1. `sudo apt install git` if you don't already have git
-2. Download the `.deb` file from the [releases page](https://github.com/github/gh-cli/releases/latest)
-3. `sudo dpkg -i gh_*_linux_amd64.deb`  install the downloaded file
+And if you spot bugs or have features that you'd really like to see in `gh`, please check out the [contributing page][]
 
-_(Uninstall with `sudo apt remove gh`)_
+## Usage
 
-## Fedora/Centos Linux
+- `gh pr [status, list, view, checkout, create]`
+- `gh issue [status, list, view, create]`
+- `gh repo [view, create, clone, fork]`
+- `gh config [get, set]`
+- `gh help`
 
-1. Download the `.rpm` file from the [releases page](https://github.com/github/gh-cli/releases/latest)
+## Documentation
+
+Read the [official docs](https://cli.github.com/manual/) for more information.
+
+## Comparison with hub
+
+For many years, [hub][] was the unofficial GitHub CLI tool. `gh` is a new project for us to explore
+what an official GitHub CLI tool can look like with a fundamentally different design. While both
+tools bring GitHub to the terminal, `hub` behaves as a proxy to `git` and `gh` is a standalone
+tool. Check out our [more detailed explanation](/docs/gh-vs-hub.md) to learn more.
+
+
+<!-- this anchor is linked to from elsewhere, so avoid renaming it -->
+## Installation
+
+### macOS
+
+`gh` is available via Homebrew and MacPorts.
+
+#### Homebrew
+
+Install: `brew install github/gh/gh`
+
+Upgrade: `brew upgrade gh`
+
+#### MacPorts
+
+Install: `sudo port install gh`
+
+Upgrade: `sudo port selfupdate && sudo port upgrade gh`
+
+### Windows
+
+`gh` is available via [scoop][], [Chocolatey][], and as downloadable MSI.
+
+#### scoop
+
+Install:
+
+```
+scoop bucket add github-gh https://github.com/cli/scoop-gh.git
+scoop install gh
+```
+
+Upgrade: `scoop update gh`
+
+#### Chocolatey
+
+Install:
+
+```
+choco install gh
+```
+
+Upgrade:
+
+```
+choco upgrade gh
+```
+
+#### Signed MSI
+
+MSI installers are available for download on the [releases page][].
+
+### Debian/Ubuntu Linux
+
+Install and upgrade:
+
+1. Download the `.deb` file from the [releases page][]
+2. `sudo apt install ./gh_*_linux_amd64.deb` install the downloaded file
+
+### Fedora Linux
+
+Install and upgrade:
+
+1. Download the `.rpm` file from the [releases page][]
+2. `sudo dnf install gh_*_linux_amd64.rpm` install the downloaded file
+
+### Centos Linux
+
+Install and upgrade:
+
+1. Download the `.rpm` file from the [releases page][]
 2. `sudo yum localinstall gh_*_linux_amd64.rpm` install the downloaded file
 
-_(Uninstall with `sudo yum remove gh`)_
+### openSUSE/SUSE Linux
 
-## Other Linux
+Install and upgrade:
 
-1. Download the `_linux_amd64.tar.gz` file from the [releases page](https://github.com/github/gh-cli/releases/latest)
-2. `tar -xf gh_*_linux_amd64.tar.gz`
-3. Copy the uncompressed `gh` somewhere on your `$PATH` (e.g. `sudo cp gh_*_linux_amd64/bin/gh /usr/local/bin/`)
+1. Download the `.rpm` file from the [releases page][]
+2. `sudo zypper in gh_*_linux_amd64.rpm` install the downloaded file
 
-_(Uninstall with `rm`)_
+### Arch Linux
 
-# Process
+Arch Linux users can install from the AUR: https://aur.archlinux.org/packages/github-cli/
 
-- [Demo planning doc](https://docs.google.com/document/d/18ym-_xjFTSXe0-xzgaBn13Su7MEhWfLE5qSNPJV4M0A/edit)
-- [Weekly tracking issue](https://github.com/github/gh-cli/labels/tracking%20issue)
-- [Weekly sync notes](https://docs.google.com/document/d/1eUo9nIzXbC1DG26Y3dk9hOceLua2yFlwlvFPZ82MwHg/edit)
+```bash
+$ yay -S github-cli
+```
 
-# How to create a release
+### Other platforms
 
-This can all be done from your local terminal.
+Install a prebuilt binary from the [releases page][]
 
-1. `git tag 'vVERSION_NUMBER' # example git tag 'v0.0.1'`
-2. `git push origin vVERSION_NUMBER`
-3. Wait a few minutes for the build to run and CI to pass. Look at the [actions tab](https://github.com/github/gh-cli/actions) to check the progress.
-4. Go to <https://github.com/github/homebrew-gh/releases> and look at the release
+### [Build from source](/docs/source.md)
 
-# Test a release
-
-A local release can be created for testing without creating anything official on the release page.
-
-1. `git tag 'v6.6.6' # some throwaway version number`
-2. `env GH_OAUTH_CLIENT_SECRET=foobar GH_OAUTH_CLIENT_ID=1234 goreleaser --skip-publish --rm-dist`
-3. Check and test files in `dist/`
-4. `git tag -d v6.6.6 # delete the throwaway tag`
+[docs]: https://cli.github.com/manual
+[scoop]: https://scoop.sh
+[Chocolatey]: https://chocolatey.org
+[releases page]: https://github.com/cli/cli/releases/latest
+[hub]: https://github.com/github/hub
+[contributing page]: https://github.com/cli/cli/blob/trunk/.github/CONTRIBUTING.md

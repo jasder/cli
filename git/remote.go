@@ -2,8 +2,11 @@ package git
 
 import (
 	"net/url"
+	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/cli/cli/internal/run"
 )
 
 var remoteRE = regexp.MustCompile(`(.+)\s+(.+)\s+\((push|fetch)\)`)
@@ -66,4 +69,34 @@ func parseRemotes(gitRemotes []string) (remotes RemoteSet) {
 		}
 	}
 	return
+}
+
+// AddRemote adds a new git remote and auto-fetches objects from it
+func AddRemote(name, u string) (*Remote, error) {
+	addCmd := exec.Command("git", "remote", "add", "-f", name, u)
+	err := run.PrepareCmd(addCmd).Run()
+	if err != nil {
+		return nil, err
+	}
+
+	var urlParsed *url.URL
+	if strings.HasPrefix(u, "https") {
+		urlParsed, err = url.Parse(u)
+		if err != nil {
+			return nil, err
+		}
+
+	} else {
+		urlParsed, err = ParseURL(u)
+		if err != nil {
+			return nil, err
+		}
+
+	}
+
+	return &Remote{
+		Name:     name,
+		FetchURL: urlParsed,
+		PushURL:  urlParsed,
+	}, nil
 }

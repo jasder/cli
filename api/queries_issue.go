@@ -1,29 +1,72 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"time"
+
+	"github.com/cli/cli/internal/ghrepo"
+	"github.com/shurcooL/githubv4"
 )
 
 type IssuesPayload struct {
-	Assigned  []Issue
-	Mentioned []Issue
-	Authored  []Issue
+	Assigned  IssuesAndTotalCount
+	Mentioned IssuesAndTotalCount
+	Authored  IssuesAndTotalCount
 }
 
-type Issue struct {
-	Number int
-	Title  string
-	URL    string
-	State  string
+type IssuesAndTotalCount struct {
+	Issues     []Issue
+	TotalCount int
+}
 
-	Labels struct {
-		Nodes      []IssueLabel
+// Ref. https://developer.github.com/v4/object/issue/
+type Issue struct {
+	ID        string
+	Number    int
+	Title     string
+	URL       string
+	State     string
+	Closed    bool
+	Body      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Comments  struct {
 		TotalCount int
+	}
+	Author struct {
+		Login string
+	}
+	Assignees struct {
+		Nodes []struct {
+			Login string
+		}
+		TotalCount int
+	}
+	Labels struct {
+		Nodes []struct {
+			Name string
+		}
+		TotalCount int
+	}
+	ProjectCards struct {
+		Nodes []struct {
+			Project struct {
+				Name string
+			}
+			Column struct {
+				Name string
+			}
+		}
+		TotalCount int
+	}
+	Milestone struct {
+		Title string
 	}
 }
 
-type IssueLabel struct {
-	Name string
+type IssuesDisabledError struct {
+	error
 }
 
 const fragments = `
@@ -32,6 +75,7 @@ const fragments = `
 		title
 		url
 		state
+		updatedAt
 		labels(first: 3) {
 			nodes {
 				name
@@ -76,17 +120,20 @@ func IssueCreate(client *Client, repo *Repository, params map[string]interface{}
 	return &result.CreateIssue.Issue, nil
 }
 
-func IssueStatus(client *Client, ghRepo Repo, currentUsername string) (*IssuesPayload, error) {
+func IssueStatus(client *Client, repo ghrepo.Interface, currentUsername string) (*IssuesPayload, error) {
 	type response struct {
 		Repository struct {
 			Assigned struct {
-				Nodes []Issue
+				TotalCount int
+				Nodes      []Issue
 			}
 			Mentioned struct {
-				Nodes []Issue
+				TotalCount int
+				Nodes      []Issue
 			}
 			Authored struct {
-				Nodes []Issue
+				TotalCount int
+				Nodes      []Issue
 			}
 			HasIssuesEnabled bool
 		}
@@ -96,17 +143,20 @@ func IssueStatus(client *Client, ghRepo Repo, currentUsername string) (*IssuesPa
 	query($owner: String!, $repo: String!, $viewer: String!, $per_page: Int = 10) {
 		repository(owner: $owner, name: $repo) {
 			hasIssuesEnabled
-			assigned: issues(filterBy: {assignee: $viewer, states: OPEN}, first: $per_page, orderBy: {field: CREATED_AT, direction: DESC}) {
+			assigned: issues(filterBy: {assignee: $viewer, states: OPEN}, first: $per_page, orderBy: {field: UPDATED_AT, direction: DESC}) {
+				totalCount
 				nodes {
 					...issue
 				}
 			}
-			mentioned: issues(filterBy: {mentioned: $viewer, states: OPEN}, first: $per_page, orderBy: {field: CREATED_AT, direction: DESC}) {
+			mentioned: issues(filterBy: {mentioned: $viewer, states: OPEN}, first: $per_page, orderBy: {field: UPDATED_AT, direction: DESC}) {
+				totalCount
 				nodes {
 					...issue
 				}
 			}
-			authored: issues(filterBy: {createdBy: $viewer, states: OPEN}, first: $per_page, orderBy: {field: CREATED_AT, direction: DESC}) {
+			authored: issues(filterBy: {createdBy: $viewer, states: OPEN}, first: $per_page, orderBy: {field: UPDATED_AT, direction: DESC}) {
+				totalCount
 				nodes {
 					...issue
 				}
@@ -114,11 +164,9 @@ func IssueStatus(client *Client, ghRepo Repo, currentUsername string) (*IssuesPa
 		}
     }`
 
-	owner := ghRepo.RepoOwner()
-	repo := ghRepo.RepoName()
 	variables := map[string]interface{}{
-		"owner":  owner,
-		"repo":   repo,
+		"owner":  repo.RepoOwner(),
+		"repo":   repo.RepoName(),
 		"viewer": currentUsername,
 	}
 
@@ -129,19 +177,28 @@ func IssueStatus(client *Client, ghRepo Repo, currentUsername string) (*IssuesPa
 	}
 
 	if !resp.Repository.HasIssuesEnabled {
-		return nil, fmt.Errorf("the '%s/%s' repository has disabled issues", owner, repo)
+		return nil, fmt.Errorf("the '%s' repository has disabled issues", ghrepo.FullName(repo))
 	}
 
 	payload := IssuesPayload{
-		Assigned:  resp.Repository.Assigned.Nodes,
-		Mentioned: resp.Repository.Mentioned.Nodes,
-		Authored:  resp.Repository.Authored.Nodes,
+		Assigned: IssuesAndTotalCount{
+			Issues:     resp.Repository.Assigned.Nodes,
+			TotalCount: resp.Repository.Assigned.TotalCount,
+		},
+		Mentioned: IssuesAndTotalCount{
+			Issues:     resp.Repository.Mentioned.Nodes,
+			TotalCount: resp.Repository.Mentioned.TotalCount,
+		},
+		Authored: IssuesAndTotalCount{
+			Issues:     resp.Repository.Authored.Nodes,
+			TotalCount: resp.Repository.Authored.TotalCount,
+		},
 	}
 
 	return &payload, nil
 }
 
-func IssueList(client *Client, ghRepo Repo, state string, labels []string, assigneeString string, limit int) ([]Issue, error) {
+func IssueList(client *Client, repo ghrepo.Interface, state string, labels []string, assigneeString string, limit int, authorString string) (*IssuesAndTotalCount, error) {
 	var states []string
 	switch state {
 	case "open", "":
@@ -155,24 +212,26 @@ func IssueList(client *Client, ghRepo Repo, state string, labels []string, assig
 	}
 
 	query := fragments + `
-    query($owner: String!, $repo: String!, $limit: Int, $states: [IssueState!] = OPEN, $labels: [String!], $assignee: String) {
-      repository(owner: $owner, name: $repo) {
-		hasIssuesEnabled
-        issues(first: $limit, orderBy: {field: CREATED_AT, direction: DESC}, states: $states, labels: $labels, filterBy: {assignee: $assignee}) {
-          nodes {
-            ...issue
-          }
-        }
-      }
-    }
-  `
+	query($owner: String!, $repo: String!, $limit: Int, $endCursor: String, $states: [IssueState!] = OPEN, $labels: [String!], $assignee: String, $author: String) {
+		repository(owner: $owner, name: $repo) {
+			hasIssuesEnabled
+			issues(first: $limit, after: $endCursor, orderBy: {field: CREATED_AT, direction: DESC}, states: $states, labels: $labels, filterBy: {assignee: $assignee, createdBy: $author}) {
+				totalCount
+				nodes {
+					...issue
+				}
+				pageInfo {
+					hasNextPage
+					endCursor
+				}
+			}
+		}
+	}
+	`
 
-	owner := ghRepo.RepoOwner()
-	repo := ghRepo.RepoName()
 	variables := map[string]interface{}{
-		"limit":  limit,
-		"owner":  owner,
-		"repo":   repo,
+		"owner":  repo.RepoOwner(),
+		"repo":   repo.RepoName(),
 		"states": states,
 	}
 	if len(labels) > 0 {
@@ -181,48 +240,117 @@ func IssueList(client *Client, ghRepo Repo, state string, labels []string, assig
 	if assigneeString != "" {
 		variables["assignee"] = assigneeString
 	}
+	if authorString != "" {
+		variables["author"] = authorString
+	}
 
-	var resp struct {
+	var response struct {
 		Repository struct {
 			Issues struct {
-				Nodes []Issue
+				TotalCount int
+				Nodes      []Issue
+				PageInfo   struct {
+					HasNextPage bool
+					EndCursor   string
+				}
 			}
 			HasIssuesEnabled bool
 		}
 	}
 
-	err := client.GraphQL(query, variables, &resp)
-	if err != nil {
-		return nil, err
+	var issues []Issue
+	pageLimit := min(limit, 100)
+
+loop:
+	for {
+		variables["limit"] = pageLimit
+		err := client.GraphQL(query, variables, &response)
+		if err != nil {
+			return nil, err
+		}
+		if !response.Repository.HasIssuesEnabled {
+			return nil, fmt.Errorf("the '%s' repository has disabled issues", ghrepo.FullName(repo))
+		}
+
+		for _, issue := range response.Repository.Issues.Nodes {
+			issues = append(issues, issue)
+			if len(issues) == limit {
+				break loop
+			}
+		}
+
+		if response.Repository.Issues.PageInfo.HasNextPage {
+			variables["endCursor"] = response.Repository.Issues.PageInfo.EndCursor
+			pageLimit = min(pageLimit, limit-len(issues))
+		} else {
+			break
+		}
 	}
 
-	if !resp.Repository.HasIssuesEnabled {
-		return nil, fmt.Errorf("the '%s/%s' repository has disabled issues", owner, repo)
-	}
-
-	return resp.Repository.Issues.Nodes, nil
+	res := IssuesAndTotalCount{Issues: issues, TotalCount: response.Repository.Issues.TotalCount}
+	return &res, nil
 }
 
-func IssueByNumber(client *Client, ghRepo Repo, number int) (*Issue, error) {
+func IssueByNumber(client *Client, repo ghrepo.Interface, number int) (*Issue, error) {
 	type response struct {
 		Repository struct {
-			Issue Issue
+			Issue            Issue
+			HasIssuesEnabled bool
 		}
 	}
 
 	query := `
 	query($owner: String!, $repo: String!, $issue_number: Int!) {
 		repository(owner: $owner, name: $repo) {
+			hasIssuesEnabled
 			issue(number: $issue_number) {
+				id
+				title
+				state
+				closed
+				body
+				author {
+					login
+				}
+				comments {
+					totalCount
+				}
 				number
 				url
+				createdAt
+				assignees(first: 100) {
+					nodes {
+						login
+					}
+					totalCount
+				}
+				labels(first: 100) {
+					nodes {
+						name
+					}
+					totalCount
+				}
+				projectCards(first: 100) {
+					nodes {
+						project {
+							name
+						}
+						column {
+							name
+						}
+					}
+					totalCount
+				}
+				milestone{
+					title
+				}
 			}
 		}
 	}`
 
 	variables := map[string]interface{}{
-		"owner":        ghRepo.RepoOwner(),
-		"repo":         ghRepo.RepoName(),
+		"owner":        repo.RepoOwner(),
+		"repo":         repo.RepoName(),
 		"issue_number": number,
 	}
 
@@ -232,5 +360,52 @@ func IssueByNumber(client *Client, ghRepo Repo, number int) (*Issue, error) {
 		return nil, err
 	}
 
+	if !resp.Repository.HasIssuesEnabled {
+
+		return nil, &IssuesDisabledError{fmt.Errorf("the '%s' repository has disabled issues", ghrepo.FullName(repo))}
+	}
+
 	return &resp.Repository.Issue, nil
+}
+
+func IssueClose(client *Client, repo ghrepo.Interface, issue Issue) error {
+	var mutation struct {
+		CloseIssue struct {
+			Issue struct {
+				ID githubv4.ID
+			}
+		} `graphql:"closeIssue(input: $input)"`
+	}
+
+	input := githubv4.CloseIssueInput{
+		IssueID: issue.ID,
+	}
+
+	v4 := githubv4.NewClient(client.http)
+	err := v4.Mutate(context.Background(), &mutation, input, nil)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func IssueReopen(client *Client, repo ghrepo.Interface, issue Issue) error {
+	var mutation struct {
+		ReopenIssue struct {
+			Issue struct {
+				ID githubv4.ID
+			}
+		} `graphql:"reopenIssue(input: $input)"`
+	}
+
+	input := githubv4.ReopenIssueInput{
+		IssueID: issue.ID,
+	}
+
+	v4 := githubv4.NewClient(client.http)
+	err := v4.Mutate(context.Background(), &mutation, input, nil)
+
+	return err
 }

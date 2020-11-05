@@ -1,29 +1,150 @@
 package context
 
 import (
-	"path"
-	"strings"
+	"errors"
+	"fmt"
+	"os"
+	"sort"
 
-	"github.com/github/gh-cli/git"
-	"github.com/mitchellh/go-homedir"
+	"github.com/cli/cli/api"
+	"github.com/cli/cli/git"
+	"github.com/cli/cli/internal/config"
+	"github.com/cli/cli/internal/ghrepo"
 )
+
+// TODO these are sprinkled across command, context, config, and ghrepo
+const defaultHostname = "github.com"
 
 // Context represents the interface for querying information about the current environment
 type Context interface {
 	AuthToken() (string, error)
 	SetAuthToken(string)
-	AuthLogin() (string, error)
 	Branch() (string, error)
 	SetBranch(string)
 	Remotes() (Remotes, error)
-	BaseRepo() (GitHubRepository, error)
+	BaseRepo() (ghrepo.Interface, error)
 	SetBaseRepo(string)
+	Config() (config.Config, error)
 }
 
-// GitHubRepository is anything that can be mapped to an OWNER/REPO pair
-type GitHubRepository interface {
-	RepoOwner() string
-	RepoName() string
+// cap the number of git remotes looked up, since the user might have an
+// unusually large number of git remotes
+const maxRemotesForLookup = 5
+
+func ResolveRemotesToRepos(remotes Remotes, client *api.Client, base string) (ResolvedRemotes, error) {
+	sort.Stable(remotes)
+	lenRemotesForLookup := len(remotes)
+	if lenRemotesForLookup > maxRemotesForLookup {
+		lenRemotesForLookup = maxRemotesForLookup
+	}
+
+	hasBaseOverride := base != ""
+	baseOverride, _ := ghrepo.FromFullName(base)
+	foundBaseOverride := false
+	repos := make([]ghrepo.Interface, 0, lenRemotesForLookup)
+	for _, r := range remotes[:lenRemotesForLookup] {
+		repos = append(repos, r)
+		if ghrepo.IsSame(r, baseOverride) {
+			foundBaseOverride = true
+		}
+	}
+	if hasBaseOverride && !foundBaseOverride {
+		// additionally, look up the explicitly specified base repo if it's not
+		// already covered by git remotes
+		repos = append(repos, baseOverride)
+	}
+
+	result := ResolvedRemotes{
+		Remotes:   remotes,
+		apiClient: client,
+	}
+	if hasBaseOverride {
+		result.BaseOverride = baseOverride
+	}
+	networkResult, err := api.RepoNetwork(client, repos)
+	if err != nil {
+		return result, err
+	}
+	result.Network = networkResult
+	return result, nil
+}
+
+type ResolvedRemotes struct {
+	BaseOverride ghrepo.Interface
+	Remotes      Remotes
+	Network      api.RepoNetworkResult
+	apiClient    *api.Client
+}
+
+// BaseRepo is the first found repository in the "upstream", "github", "origin"
+// git remote order, resolved to the parent repo if the git remote points to a fork
+func (r ResolvedRemotes) BaseRepo() (*api.Repository, error) {
+	if r.BaseOverride != nil {
+		for _, repo := range r.Network.Repositories {
+			if repo != nil && ghrepo.IsSame(repo, r.BaseOverride) {
+				return repo, nil
+			}
+		}
+		return nil, fmt.Errorf("failed looking up information about the '%s' repository",
+			ghrepo.FullName(r.BaseOverride))
+	}
+
+	for _, repo := range r.Network.Repositories {
+		if repo == nil {
+			continue
+		}
+		if repo.IsFork() {
+			return repo.Parent, nil
+		}
+		return repo, nil
+	}
+
+	return nil, errors.New("not found")
+}
+
+// HeadRepo is a fork of base repo (if any), or the first found repository that
+// has push access
+func (r ResolvedRemotes) HeadRepo() (*api.Repository, error) {
+	baseRepo, err := r.BaseRepo()
+	if err != nil {
+		return nil, err
+	}
+
+	// try to find a pushable fork among existing remotes
+	for _, repo := range r.Network.Repositories {
+		if repo != nil && repo.Parent != nil && repo.ViewerCanPush() && ghrepo.IsSame(repo.Parent, baseRepo) {
+			return repo, nil
+		}
+	}
+
+	// a fork might still exist on GitHub, so let's query for it
+	var notFound *api.NotFoundError
+	if repo, err := api.RepoFindFork(r.apiClient, baseRepo); err == nil {
+		return repo, nil
+	} else if !errors.As(err, &notFound) {
+		return nil, err
+	}
+
+	// fall back to any listed repository that has push access
+	for _, repo := range r.Network.Repositories {
+		if repo != nil && repo.ViewerCanPush() {
+			return repo, nil
+		}
+	}
+	return nil, errors.New("none of the repositories have push access")
+}
+
+// RemoteForRepo finds the git remote that points to a repository
+func (r ResolvedRemotes) RemoteForRepo(repo ghrepo.Interface) (*Remote, error) {
+	for i, remote := range r.Remotes {
+		if ghrepo.IsSame(remote, repo) ||
+			// additionally, look up the resolved repository name in case this
+			// git remote points to this repository via a redirect
+			(r.Network.Repositories[i] != nil && ghrepo.IsSame(r.Network.Repositories[i], repo)) {
+			return remote, nil
+		}
+	}
+	return nil, errors.New("not found")
 }
 
 // New initializes a Context that reads from the filesystem
@@ -33,29 +154,22 @@ func New() Context {
 
 // A Context implementation that queries the filesystem
 type fsContext struct {
-	config    *configEntry
+	config    config.Config
 	remotes   Remotes
 	branch    string
-	baseRepo  GitHubRepository
+	baseRepo  ghrepo.Interface
 	authToken string
 }
 
-func ConfigDir() string {
-	dir, _ := homedir.Expand("~/.config/gh")
-	return dir
-}
-
-func configFile() string {
-	return path.Join(ConfigDir(), "config.yml")
-}
-
-func (c *fsContext) getConfig() (*configEntry, error) {
+func (c *fsContext) Config() (config.Config, error) {
 	if c.config == nil {
-		entry, err := parseOrSetupConfigFile(configFile())
-		if err != nil {
+		cfg, err := config.ParseDefaultConfig()
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = config.NewBlankConfig()
+		} else if err != nil {
 			return nil, err
 		}
-		c.config = entry
+		c.config = cfg
 		c.authToken = ""
 	}
 	return c.config, nil
@@ -66,23 +180,25 @@ func (c *fsContext) AuthToken() (string, error) {
 		return c.authToken, nil
 	}
 
-	config, err := c.getConfig()
+	cfg, err := c.Config()
 	if err != nil {
 		return "", err
 	}
-	return config.Token, nil
+
+	var notFound *config.NotFoundError
+	token, err := cfg.Get(defaultHostname, "oauth_token")
+	if token == "" || errors.As(err, &notFound) {
+		// interactive OAuth flow
+		return config.AuthFlowWithConfig(cfg, defaultHostname, "Notice: authentication required")
+	} else if err != nil {
+		return "", err
+	}
+
+	return token, nil
 }
 
 func (c *fsContext) SetAuthToken(t string) {
 	c.authToken = t
-}
-
-func (c *fsContext) AuthLogin() (string, error) {
-	config, err := c.getConfig()
-	if err != nil {
-		return "", err
-	}
-	return config.User, nil
 }
 
 func (c *fsContext) Branch() (string, error) {
@@ -92,7 +208,7 @@ func (c *fsContext) Branch() (string, error) {
 
 	currentBranch, err := git.CurrentBranch()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("could not determine current branch: %w", err)
 	}
 
 	c.branch = currentBranch
@@ -109,13 +225,21 @@ func (c *fsContext) Remotes() (Remotes, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(gitRemotes) == 0 {
+			return nil, errors.New("no git remotes found")
+		}
+
 		sshTranslate := git.ParseSSHConfig().Translator()
 		c.remotes = translateRemotes(gitRemotes, sshTranslate)
+	}
+
+	if len(c.remotes) == 0 {
+		return nil, errors.New("no git remote found for a github.com repository")
 	}
 	return c.remotes, nil
 }
 
-func (c *fsContext) BaseRepo() (GitHubRepository, error) {
+func (c *fsContext) BaseRepo() (ghrepo.Interface, error) {
 	if c.baseRepo != nil {
 		return c.baseRepo, nil
 	}
@@ -134,8 +258,5 @@ func (c *fsContext) BaseRepo() (GitHubRepository, error) {
 }
 
 func (c *fsContext) SetBaseRepo(nwo string) {
-	parts := strings.SplitN(nwo, "/", 2)
-	if len(parts) == 2 {
-		c.baseRepo = &ghRepo{parts[0], parts[1]}
-	}
+	c.baseRepo, _ = ghrepo.FromFullName(nwo)
 }
